@@ -1,36 +1,33 @@
 package com.karumi.shot.screenshots
 
-import java.io.File
-
-import com.karumi.shot.domain._
+import com.karumi.shot.domain.{Config, DifferentImageDimensions, DifferentScreenshots, Dimension, Screenshot, ScreenshotComparisonError, ScreenshotNotFound, ScreenshotsComparisionResult}
 import com.karumi.shot.domain.model.ScreenshotsSuite
 import com.sksamuel.scrimage.Image
+
+import java.nio.file.{Files, Path, Paths}
+import javax.imageio.ImageIO
+import java.awt.image.BufferedImage
+import scala.util.Try
 
 class ScreenshotsComparator {
 
   def compare(screenshots: ScreenshotsSuite, tolerance: Double): ScreenshotsComparisionResult = {
-    val errors =
-      screenshots.par.flatMap(compareScreenshot(_, tolerance)).toList
+    val errors = screenshots.par.flatMap(compareScreenshot(_, tolerance)).toList
     ScreenshotsComparisionResult(errors, screenshots)
   }
 
-  private def compareScreenshot(
-      screenshot: Screenshot,
-      tolerance: Double
-  ): Option[ScreenshotComparisonError] = {
-    val recordedScreenshotFile = new File(screenshot.recordedScreenshotPath)
-    if (!recordedScreenshotFile.exists()) {
+  private def compareScreenshot(screenshot: Screenshot, tolerance: Double): Option[ScreenshotComparisonError] = {
+    val recordedScreenshotPath = Paths.get(screenshot.recordedScreenshotPath)
+    if (!Files.exists(recordedScreenshotPath)) {
       Some(ScreenshotNotFound(screenshot))
     } else {
-      val oldScreenshot =
-        Image.fromFile(recordedScreenshotFile)
+      val oldScreenshot = loadImage(recordedScreenshotPath)
       val newScreenshot = ScreenshotComposer.composeNewScreenshot(screenshot)
-      if (!haveSameDimensions(newScreenshot, oldScreenshot)) {
-        val originalDimension =
-          Dimension(oldScreenshot.width, oldScreenshot.height)
+      if (!haveSameDimensions(toBufferedImage(newScreenshot), oldScreenshot)) {
+        val originalDimension = Dimension(oldScreenshot.getWidth, oldScreenshot.getHeight)
         val newDimension = Dimension(newScreenshot.width, newScreenshot.height)
         Some(DifferentImageDimensions(screenshot, originalDimension, newDimension))
-      } else if (imagesAreDifferent(screenshot, oldScreenshot, newScreenshot, tolerance)) {
+      } else if (imagesAreDifferent(screenshot, oldScreenshot, toBufferedImage(newScreenshot), tolerance)) {
         Some(DifferentScreenshots(screenshot))
       } else {
         None
@@ -38,24 +35,35 @@ class ScreenshotsComparator {
     }
   }
 
+  private def toBufferedImage(image: Image): BufferedImage = {
+    val width = image.width
+    val height = image.height
+    val bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
+    val g2d = bufferedImage.createGraphics()
+    Try(g2d.drawImage(image.awt, 0, 0, null)).getOrElse(g2d.dispose())
+    bufferedImage
+  }
+
+  private def loadImage(path: Path): BufferedImage = {
+    ImageIO.read(path.toFile)
+  }
+
   private def imagesAreDifferent(
-      screenshot: Screenshot,
-      oldScreenshot: Image,
-      newScreenshot: Image,
-      tolerance: Double
-  ) = {
+                                  screenshot: Screenshot,
+                                  oldScreenshot: BufferedImage,
+                                  newScreenshot: BufferedImage,
+                                  tolerance: Double
+                                ) = {
     if (oldScreenshot == newScreenshot) {
       false
     } else {
-      val oldScreenshotPixels = oldScreenshot.pixels
-      val newScreenshotPixels = newScreenshot.pixels
+      val oldScreenshotPixels = oldScreenshot.getRGB(0, 0, oldScreenshot.getWidth, oldScreenshot.getHeight, null, 0, oldScreenshot.getWidth)
+      val newScreenshotPixels = newScreenshot.getRGB(0, 0, newScreenshot.getWidth, newScreenshot.getHeight, null, 0, newScreenshot.getWidth)
 
-      val differentPixels =
-        oldScreenshotPixels.zip(newScreenshotPixels).filter { case (a, b) => a != b }
-      val percentageOfDifferentPixels =
-        differentPixels.length.toDouble / oldScreenshotPixels.length.toDouble
-      val percentageOutOf100        = percentageOfDifferentPixels * 100.0
-      val imagesAreDifferent        = percentageOutOf100 > tolerance
+      val differentPixels = oldScreenshotPixels.zip(newScreenshotPixels).filter { case (a, b) => a != b }
+      val percentageOfDifferentPixels = differentPixels.length.toDouble / oldScreenshotPixels.length.toDouble
+      val percentageOutOf100 = percentageOfDifferentPixels * 100.0
+      val imagesAreDifferent = percentageOutOf100 > tolerance
       val imagesAreConsideredEquals = !imagesAreDifferent
       if (imagesAreConsideredEquals && tolerance != Config.defaultTolerance) {
         val screenshotName = screenshot.name
@@ -67,7 +75,7 @@ class ScreenshotsComparator {
     }
   }
 
-  private def haveSameDimensions(newScreenshot: Image, recordedScreenshot: Image): Boolean =
-    newScreenshot.width == recordedScreenshot.width && newScreenshot.height == recordedScreenshot.height
+  private def haveSameDimensions(newScreenshot: BufferedImage, recordedScreenshot: BufferedImage): Boolean =
+    newScreenshot.getWidth == recordedScreenshot.getWidth && newScreenshot.getHeight == recordedScreenshot.getHeight
 
 }
